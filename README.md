@@ -162,7 +162,16 @@ Hotkey=^!s
 
 ## Changelog
 
-### v3.1 (Current)
+
+### v3.2 (Current)
+- All keys now recordable (Enter, Escape, etc. no longer blocked)
+- Snap together / separate option for button layout spacing
+- Fixed tab content spacing and alignment
+- Visual dividers between settings sections
+- Added Fn key documentation (hardware-level limitation)
+- Expanded DisplayKeyName with Enter, Escape, Tab, Delete, Insert, Home, End
+
+### v3.1
 - Multiple shortcut profiles with independent toggle buttons
 - Tab-based settings GUI (no scroll overflow)
 - Function.Bind() for stable closure behavior
