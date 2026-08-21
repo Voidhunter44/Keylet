@@ -2,7 +2,7 @@
 
 **Hold any combination of keyboard keys with a single toggle.** A floating, always-on-top widget lets you lock modifier keys (or any keys) without physically holding them down.
 
-![AutoHotkey v2](https://img.shields.io/badge/AutoHotkey-v2.0-blue) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-brightgreen) 
+![AutoHotkey v2](https://img.shields.io/badge/AutoHotkey-v2.0-blue) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-brightgreen) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
 
@@ -157,6 +157,23 @@ Hotkey=^!s
 | Hotkey doesn't work | May conflict with another app; record a different combination |
 | Keys stuck after crash | Run script again → "Release all keys", or press Ctrl+Alt+Del |
 | Scroll/zoom weird | That's your held modifiers affecting the OS; release them first |
+
+---
+
+## License
+
+MIT License — free for personal and commercial use.
+
+---
+
+## Contributing
+
+Contributions welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes
+4. Push and open a Pull Request
 
 ---
 
