@@ -2,10 +2,12 @@
 #SingleInstance Force
 
 ; ============================================================
-; Universal Modifier Controller v3.2
+; Universal Modifier Controller v3.3
 ; AutoHotkey v2
 ;
 ; Multi-profile modifier key holder with floating widget.
+; NEW: Split mode — each button is an independent draggable widget.
+; NEW: Micro size — ultra-compact 24x24 buttons.
 ; ============================================================
 
 DllCall("SetProcessDPIAware")
@@ -23,7 +25,8 @@ global RecordingProfileIndex := 0
 
 global WidgetVisible := true
 global WidgetSize := "Medium"
-global WidgetSnap := true  ; true = buttons together, false = spaced apart
+global WidgetSnap := true
+global SplitMode := false  ; NEW: each button = independent widget
 
 global ShowWidgetStatus := true
 global ShowWidgetName := true
@@ -45,6 +48,7 @@ global RecordActionBtn := 0
 global RecordHotkeyBtn := 0
 global SizeDrop := 0
 global SnapCheck := 0
+global SplitCheck := 0
 global WidgetStatusCheck := 0
 global WidgetNameCheck := 0
 global WidgetKeysCheck := 0
@@ -66,6 +70,9 @@ global ProfileWidgetBtns := []
 global ProfileWidgetStatus := []
 global ProfileWidgetKeys := []
 
+; --- Split mode widgets ---
+global SplitWidgets := []  ; Array of { Gui, Hwnd, Btn }
+
 ; -----------------------------
 ; Load & Build
 ; -----------------------------
@@ -78,6 +85,8 @@ if Profiles.Length = 0 {
     p.ActionKeys := ["LControl", "LAlt"]
     p.Hotkey := "^!Space"
     p.IsHeld := false
+    p.SplitX := -1
+    p.SplitY := -1
     Profiles.Push(p)
 }
 
@@ -86,7 +95,11 @@ BuildWidgetGui()
 SetupTray()
 RegisterAllHotkeys()
 UpdateMainUI()
-ShowWidget()
+
+if SplitMode
+    ShowSplitWidgets()
+else
+    ShowWidget()
 
 OnExit(Cleanup)
 return
@@ -97,7 +110,7 @@ return
 
 LoadConfig() {
     global ConfigFile, Profiles
-    global WidgetSize, WidgetSnap
+    global WidgetSize, WidgetSnap, SplitMode
     global ShowWidgetStatus, ShowWidgetName, ShowWidgetKeys, ShowWidgetToggle
     global WidgetPosX, WidgetPosY
 
@@ -106,6 +119,7 @@ LoadConfig() {
 
     WidgetSize := IniRead(ConfigFile, "Widget", "Size", "Medium")
     WidgetSnap := IniRead(ConfigFile, "Widget", "Snap", "1") = "1"
+    SplitMode := IniRead(ConfigFile, "Widget", "Split", "0") = "1"
     ShowWidgetStatus := IniRead(ConfigFile, "Widget", "ShowStatus", "1") = "1"
     ShowWidgetName := IniRead(ConfigFile, "Widget", "ShowName", "1") = "1"
     ShowWidgetKeys := IniRead(ConfigFile, "Widget", "ShowKeys", "1") = "1"
@@ -124,19 +138,22 @@ LoadConfig() {
         p.ActionKeys := keysStr != "" ? StrSplit(keysStr, ",") : []
         p.Hotkey := IniRead(ConfigFile, section, "Hotkey", "")
         p.IsHeld := false
+        p.SplitX := Integer(IniRead(ConfigFile, section, "SplitX", "-1"))
+        p.SplitY := Integer(IniRead(ConfigFile, section, "SplitY", "-1"))
         Profiles.Push(p)
     }
 }
 
 SaveConfig() {
     global ConfigFile, Profiles
-    global WidgetSize, WidgetSnap
+    global WidgetSize, WidgetSnap, SplitMode
     global ShowWidgetStatus, ShowWidgetName, ShowWidgetKeys, ShowWidgetToggle
     global WidgetPosX, WidgetPosY
 
     try {
         IniWrite(WidgetSize, ConfigFile, "Widget", "Size")
         IniWrite(WidgetSnap ? "1" : "0", ConfigFile, "Widget", "Snap")
+        IniWrite(SplitMode ? "1" : "0", ConfigFile, "Widget", "Split")
         IniWrite(ShowWidgetStatus ? "1" : "0", ConfigFile, "Widget", "ShowStatus")
         IniWrite(ShowWidgetName ? "1" : "0", ConfigFile, "Widget", "ShowName")
         IniWrite(ShowWidgetKeys ? "1" : "0", ConfigFile, "Widget", "ShowKeys")
@@ -156,13 +173,15 @@ SaveConfig() {
             IniWrite(p.Name, ConfigFile, section, "Name")
             IniWrite(keyString, ConfigFile, section, "ActionKeys")
             IniWrite(p.Hotkey, ConfigFile, section, "Hotkey")
+            IniWrite(String(p.SplitX), ConfigFile, section, "SplitX")
+            IniWrite(String(p.SplitY), ConfigFile, section, "SplitY")
         }
     }
 }
 
 SaveWidgetPosition() {
-    global WidgetGui, WidgetPosX, WidgetPosY, WidgetVisible
-    if !WidgetVisible || !WidgetGui
+    global WidgetGui, WidgetPosX, WidgetPosY, WidgetVisible, SplitMode
+    if SplitMode || !WidgetVisible || !WidgetGui
         return
     try {
         WidgetGui.GetPos(&x, &y)
@@ -170,6 +189,20 @@ SaveWidgetPosition() {
         WidgetPosY := y
         SaveConfig()
     }
+}
+
+SaveSplitPositions() {
+    global SplitWidgets, Profiles
+    for i, sw in SplitWidgets {
+        if i > Profiles.Length
+            break
+        try {
+            sw.Gui.GetPos(&x, &y)
+            Profiles[i].SplitX := x
+            Profiles[i].SplitY := y
+        }
+    }
+    SaveConfig()
 }
 
 ; ============================================================
@@ -180,7 +213,7 @@ BuildMainGui() {
     global MainGui
     global MainActionEdit, MainHotkeyEdit, ActionListText, StatusText
     global RecordActionBtn, RecordHotkeyBtn
-    global WidgetSize, SizeDrop, SnapCheck, WidgetSnap
+    global WidgetSize, SizeDrop, SnapCheck, SplitCheck, WidgetSnap, SplitMode
     global WidgetStatusCheck, WidgetNameCheck, WidgetKeysCheck, WidgetToggleCheck
     global ShowWidgetStatus, ShowWidgetName, ShowWidgetKeys, ShowWidgetToggle
     global ProfileListBox, ProfileNameEdit, SelectedProfile, Profiles
@@ -199,7 +232,7 @@ BuildMainGui() {
 
     ; === TAB CONTROL ===
     MainGui.SetFont("s9 Norm", "Segoe UI")
-    Tab := MainGui.Add("Tab3", "xm y+10 w650 h490", ["  Profiles  ", "  Widget  "])
+    Tab := MainGui.Add("Tab3", "xm y+10 w650 h500", ["  Profiles  ", "  Widget  "])
 
     ; ==========================================
     ; TAB 1: PROFILES
@@ -213,7 +246,6 @@ BuildMainGui() {
     MainGui.Add("Text", "x30 y+3 w600 c666666",
         "Select a profile to edit it. Each one holds a different set of keys.")
 
-    ; Profile list.
     profileNames := []
     for p in Profiles
         profileNames.Push(p.Name "  —  " FormatKeys(p.ActionKeys))
@@ -221,7 +253,6 @@ BuildMainGui() {
     ProfileListBox := MainGui.Add("ListBox", "x30 y+8 w606 h85 Choose1", profileNames)
     ProfileListBox.OnEvent("Change", ProfileSelected)
 
-    ; Management buttons.
     AddBtn := MainGui.Add("Button", "x30 y+6 w90 h26", "+ Add")
     AddBtn.OnEvent("Click", AddProfile)
 
@@ -231,40 +262,33 @@ BuildMainGui() {
     DuplicateBtn := MainGui.Add("Button", "x+6 yp w90 h26", "Duplicate")
     DuplicateBtn.OnEvent("Click", DuplicateProfile)
 
-    ; --- Divider ---
     MainGui.Add("Text", "x30 y+14 w606 h1 Background999999")
 
-    ; --- Edit section ---
     MainGui.SetFont("s10 Bold")
     MainGui.Add("Text", "x30 y+14", "Edit Selected Profile")
-
     MainGui.SetFont("s9 Norm")
 
-    ; Name row.
     MainGui.Add("Text", "x30 y+12 w50 h22 +0x200", "Name:")
     ProfileNameEdit := MainGui.Add("Edit", "x+6 yp w220 h24",
         Profiles.Length > 0 ? Profiles[1].Name : "")
     ProfileNameEdit.OnEvent("Change", ProfileNameChanged)
 
-    ; Action keys row.
     MainGui.Add("Text", "x30 y+14 w606 c555555", "Action Keys  (the keys that get held down)")
     MainActionEdit := MainGui.Add("Edit", "x30 y+4 w488 h26 ReadOnly", "")
     RecordActionBtn := MainGui.Add("Button", "x+6 yp w110 h26", "Record Keys")
     RecordActionBtn.OnEvent("Click", StartActionRecorder)
     ActionListText := MainGui.Add("Text", "x30 y+3 w606 h16 c444444 +0x100", "")
 
-    ; Hotkey row.
     MainGui.Add("Text", "x30 y+10 w606 c555555", "Activation Hotkey  (press anywhere to toggle this profile)")
     MainHotkeyEdit := MainGui.Add("Edit", "x30 y+4 w488 h26 ReadOnly", "")
     RecordHotkeyBtn := MainGui.Add("Button", "x+6 yp w110 h26", "Record Hotkey")
     RecordHotkeyBtn.OnEvent("Click", StartHotkeyRecorder)
 
-    ; Status row.
     MainGui.Add("Text", "x30 y+14 w50 h18", "Status:")
     StatusText := MainGui.Add("Text", "x+6 yp w300 h18 c666666", "○ OFF")
 
     MainGui.Add("Text", "x30 y+10 w606 c999999",
-        "Note: Fn key is hardware-level on most laptops and invisible to software. Enter and Escape CAN be recorded.")
+        "Note: Fn key is hardware-level on most laptops and invisible to software.")
 
     ; ==========================================
     ; TAB 2: WIDGET SETTINGS
@@ -273,46 +297,47 @@ BuildMainGui() {
 
     MainGui.SetFont("s10 Bold", "Segoe UI")
     MainGui.Add("Text", "x30 y68", "Appearance")
-
     MainGui.SetFont("s9 Norm")
 
-    ; Size.
     MainGui.Add("Text", "x30 y+14 w40 h22 +0x200", "Size:")
 
     sizeIndex := 1
     switch WidgetSize {
-        case "Extra Small": sizeIndex := 1
-        case "Small":       sizeIndex := 2
-        case "Medium":      sizeIndex := 3
-        case "Large":       sizeIndex := 4
+        case "Micro":       sizeIndex := 1
+        case "Extra Small": sizeIndex := 2
+        case "Small":       sizeIndex := 3
+        case "Medium":      sizeIndex := 4
+        case "Large":       sizeIndex := 5
     }
     SizeDrop := MainGui.Add("DropDownList", "x+6 yp w140 Choose" sizeIndex,
-        ["Extra Small", "Small", "Medium", "Large"])
+        ["Micro", "Extra Small", "Small", "Medium", "Large"])
     SizeDrop.OnEvent("Change", WidgetSizeChanged)
 
     MainGui.Add("Text", "x30 y+6 w606 c777777",
-        "Extra Small = row of square buttons only. Other sizes show full details.")
+        "Micro = tiny 24px dots. Extra Small = 40px squares. Others show full details.")
 
-    ; Snap option.
-    MainGui.SetFont("s9 Norm")
-    MainGui.Add("Text", "x30 y+16 w606 h1 Background999999")
+    ; Layout section.
+    MainGui.Add("Text", "x30 y+14 w606 h1 Background999999")
     MainGui.SetFont("s10 Bold")
     MainGui.Add("Text", "x30 y+12", "Button Layout")
     MainGui.SetFont("s9 Norm")
 
-    SnapCheck := MainGui.Add("CheckBox", "x30 y+8 Checked" (WidgetSnap ? 1 : 0), "Snap buttons together (compact)")
+    SnapCheck := MainGui.Add("CheckBox", "x30 y+8 Checked" (WidgetSnap ? 1 : 0), "Snap buttons together (compact spacing)")
     SnapCheck.OnEvent("Click", SnapChanged)
 
+    SplitCheck := MainGui.Add("CheckBox", "x30 y+6 Checked" (SplitMode ? 1 : 0), "Split buttons into separate draggable widgets")
+    SplitCheck.OnEvent("Click", SplitChanged)
+
     MainGui.Add("Text", "x30 y+4 w606 c777777",
-        "When checked: buttons are packed tight. When unchecked: buttons have spacing between them.")
+        "Split mode: each profile becomes its own independent floating button you can place anywhere.")
 
     ; Display options.
-    MainGui.Add("Text", "x30 y+16 w606 h1 Background999999")
+    MainGui.Add("Text", "x30 y+14 w606 h1 Background999999")
     MainGui.SetFont("s10 Bold")
     MainGui.Add("Text", "x30 y+12", "Show on Widget")
     MainGui.SetFont("s9 Norm")
 
-    WidgetStatusCheck := MainGui.Add("CheckBox", "x30 y+10 Checked" (ShowWidgetStatus ? 1 : 0), "Status indicator  (● ON / ○ OFF)")
+    WidgetStatusCheck := MainGui.Add("CheckBox", "x30 y+10 Checked" (ShowWidgetStatus ? 1 : 0), "Status indicator")
     WidgetNameCheck := MainGui.Add("CheckBox", "x30 y+6 Checked" (ShowWidgetName ? 1 : 0), "App title")
     WidgetKeysCheck := MainGui.Add("CheckBox", "x30 y+6 Checked" (ShowWidgetKeys ? 1 : 0), "Key combination")
     WidgetToggleCheck := MainGui.Add("CheckBox", "x30 y+6 Checked" (ShowWidgetToggle ? 1 : 0), "Toggle buttons")
@@ -323,29 +348,28 @@ BuildMainGui() {
     WidgetToggleCheck.OnEvent("Click", WidgetOptionsChanged)
 
     ; Quick actions.
-    MainGui.Add("Text", "x30 y+16 w606 h1 Background999999")
+    MainGui.Add("Text", "x30 y+14 w606 h1 Background999999")
     MainGui.SetFont("s10 Bold")
     MainGui.Add("Text", "x30 y+12", "Quick Actions")
     MainGui.SetFont("s9 Norm")
 
     ShowWidgetBtn := MainGui.Add("Button", "x30 y+10 w120 h28", "Show Widget")
-    ShowWidgetBtn.OnEvent("Click", ShowWidget)
+    ShowWidgetBtn.OnEvent("Click", ShowWidgetClick)
 
     HideWidgetBtn := MainGui.Add("Button", "x+8 yp w120 h28", "Hide Widget")
-    HideWidgetBtn.OnEvent("Click", HideWidget)
+    HideWidgetBtn.OnEvent("Click", HideWidgetClick)
 
     ReleaseBtn := MainGui.Add("Button", "x+8 yp w140 h28", "Release All Keys")
     ReleaseBtn.OnEvent("Click", ReleaseAllClick)
 
     MainGui.Add("Text", "x30 y+14 w606 c888888",
-        "When modifiers are held (Ctrl/Alt), Windows may interpret scroll as zoom. This is OS behavior.")
+        "When modifiers are held (Ctrl/Alt), Windows may interpret scroll as zoom.")
 
-    ; === End tabs ===
     Tab.UseTab()
 
     MainGui.OnEvent("Close", MainWindowClose)
     MainGui.OnEvent("Size", MainGuiSize)
-    MainGui.Show("w690 h560")
+    MainGui.Show("w690 h570")
 }
 
 MainGuiSize(guiObj, minMax, width, height) {
@@ -364,11 +388,44 @@ ReleaseAllClick(*) {
     ReleaseAllModifiers()
 }
 
+ShowWidgetClick(*) {
+    global SplitMode
+    if SplitMode
+        ShowSplitWidgets()
+    else
+        ShowWidget()
+}
+
+HideWidgetClick(*) {
+    global SplitMode
+    if SplitMode
+        HideSplitWidgets()
+    else
+        HideWidget()
+}
+
 SnapChanged(*) {
-    global WidgetSnap, SnapCheck
+    global WidgetSnap, SnapCheck, SplitMode
     WidgetSnap := SnapCheck.Value = 1
     SaveConfig()
-    UpdateWidget()
+    if !SplitMode
+        UpdateWidget()
+}
+
+SplitChanged(*) {
+    global SplitMode, SplitCheck, WidgetVisible
+    SplitMode := SplitCheck.Value = 1
+    SaveConfig()
+
+    if SplitMode {
+        ; Hide unified widget, show split widgets.
+        HideWidget()
+        ShowSplitWidgets()
+    } else {
+        ; Hide split widgets, show unified widget.
+        HideSplitWidgets()
+        ShowWidget()
+    }
 }
 
 ; ============================================================
@@ -376,24 +433,32 @@ SnapChanged(*) {
 ; ============================================================
 
 AddProfile(*) {
-    global Profiles, ProfileListBox
+    global Profiles, ProfileListBox, SplitMode
 
     p := {}
     p.Name := "Profile " (Profiles.Length + 1)
     p.ActionKeys := []
     p.Hotkey := ""
     p.IsHeld := false
+    p.SplitX := -1
+    p.SplitY := -1
     Profiles.Push(p)
 
     SaveConfig()
     RefreshProfileList()
     ProfileListBox.Choose(Profiles.Length)
     ProfileSelected(ProfileListBox)
-    RebuildWidget()
+
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        RebuildWidget()
+    }
 }
 
 RemoveProfile(*) {
-    global Profiles, SelectedProfile, ProfileListBox
+    global Profiles, SelectedProfile, ProfileListBox, SplitMode
 
     if Profiles.Length <= 1 {
         MsgBox("You need at least one profile.", AppName, "Icon!")
@@ -415,11 +480,17 @@ RemoveProfile(*) {
     ProfileListBox.Choose(SelectedProfile)
     ProfileSelected(ProfileListBox)
     RegisterAllHotkeys()
-    RebuildWidget()
+
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        RebuildWidget()
+    }
 }
 
 DuplicateProfile(*) {
-    global Profiles, SelectedProfile, ProfileListBox
+    global Profiles, SelectedProfile, ProfileListBox, SplitMode
 
     src := Profiles[SelectedProfile]
     p := {}
@@ -427,13 +498,21 @@ DuplicateProfile(*) {
     p.ActionKeys := src.ActionKeys.Clone()
     p.Hotkey := ""
     p.IsHeld := false
+    p.SplitX := -1
+    p.SplitY := -1
     Profiles.Push(p)
 
     SaveConfig()
     RefreshProfileList()
     ProfileListBox.Choose(Profiles.Length)
     ProfileSelected(ProfileListBox)
-    RebuildWidget()
+
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        RebuildWidget()
+    }
 }
 
 RefreshProfileList() {
@@ -461,7 +540,7 @@ ProfileSelected(ctrl, *) {
 }
 
 ProfileNameChanged(ctrl, *) {
-    global SelectedProfile, Profiles, ProfileListBox
+    global SelectedProfile, Profiles, ProfileListBox, SplitMode
 
     if SelectedProfile < 1 || SelectedProfile > Profiles.Length
         return
@@ -470,11 +549,15 @@ ProfileNameChanged(ctrl, *) {
     SaveConfig()
     RefreshProfileList()
     ProfileListBox.Choose(SelectedProfile)
-    RebuildWidget()
+
+    if SplitMode
+        UpdateSplitWidgets()
+    else
+        RebuildWidget()
 }
 
 ; ============================================================
-; WIDGET
+; UNIFIED WIDGET (non-split mode)
 ; ============================================================
 
 BuildWidgetGui() {
@@ -585,12 +668,25 @@ RebuildWidget() {
 }
 
 WidgetHitTest(wParam, lParam, msg, hwnd) {
-    global WidgetHwnd, ProfileWidgetBtns, WidgetMenuBtn
+    global WidgetHwnd, ProfileWidgetBtns, WidgetMenuBtn, SplitWidgets
 
-    if (hwnd != WidgetHwnd)
-        return
+    ; Check unified widget.
+    if (hwnd = WidgetHwnd) {
+        return HandleHitTest(hwnd, lParam, ProfileWidgetBtns, WidgetMenuBtn)
+    }
 
-    try WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " WidgetHwnd)
+    ; Check split widgets.
+    for sw in SplitWidgets {
+        if (hwnd = sw.Hwnd) {
+            return HandleSplitHitTest(hwnd, lParam, sw.Btn)
+        }
+    }
+
+    return
+}
+
+HandleHitTest(hwnd, lParam, buttons, menuBtn) {
+    try WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " hwnd)
     catch
         return
     if (winW = 0 || winH = 0)
@@ -606,7 +702,7 @@ WidgetHitTest(wParam, lParam, msg, hwnd) {
     cx := screenX - winX
     cy := screenY - winY
 
-    for btn in ProfileWidgetBtns {
+    for btn in buttons {
         if btn.Visible {
             try {
                 btn.GetPos(&bx, &by, &bw, &bh)
@@ -616,9 +712,9 @@ WidgetHitTest(wParam, lParam, msg, hwnd) {
         }
     }
 
-    if WidgetMenuBtn.Visible {
+    if menuBtn.Visible {
         try {
-            WidgetMenuBtn.GetPos(&mx, &my, &mw, &mh)
+            menuBtn.GetPos(&mx, &my, &mw, &mh)
             if (cx >= mx && cx <= mx + mw && cy >= my && cy <= my + mh)
                 return
         }
@@ -627,26 +723,61 @@ WidgetHitTest(wParam, lParam, msg, hwnd) {
     return 2  ; HTCAPTION
 }
 
+HandleSplitHitTest(hwnd, lParam, btn) {
+    try WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " hwnd)
+    catch
+        return
+    if (winW = 0 || winH = 0)
+        return
+
+    screenX := lParam & 0xFFFF
+    if (screenX > 0x7FFF)
+        screenX -= 0x10000
+    screenY := (lParam >> 16) & 0xFFFF
+    if (screenY > 0x7FFF)
+        screenY -= 0x10000
+
+    cx := screenX - winX
+    cy := screenY - winY
+
+    ; Check if over the button.
+    if btn.Visible {
+        try {
+            btn.GetPos(&bx, &by, &bw, &bh)
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh)
+                return  ; HTCLIENT — button clickable.
+        }
+    }
+
+    return 2  ; HTCAPTION — drag the mini widget.
+}
+
 ApplyRoundedCorners() {
     global WidgetHwnd
     if !WidgetHwnd
         return
+    ApplyRoundToHwnd(WidgetHwnd)
+}
+
+ApplyRoundToHwnd(hwnd) {
     if VerCompare(A_OSVersion, "10.0.22000") >= 0 {
-        DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", WidgetHwnd, "Int", 33, "Int*", 2, "Int", 4)
+        DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", hwnd, "Int", 33, "Int*", 2, "Int", 4)
     } else {
         try {
-            WinGetPos(, , &w, &h, "ahk_id " WidgetHwnd)
+            WinGetPos(, , &w, &h, "ahk_id " hwnd)
             if (w > 0 && h > 0) {
                 hRgn := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0,
                     "Int", w + 1, "Int", h + 1, "Int", 12, "Int", 12, "Ptr")
-                DllCall("SetWindowRgn", "Ptr", WidgetHwnd, "Ptr", hRgn, "Int", true)
+                DllCall("SetWindowRgn", "Ptr", hwnd, "Ptr", hRgn, "Int", true)
             }
         }
     }
 }
 
 ShowWidget(*) {
-    global WidgetGui, WidgetVisible, WidgetPosX, WidgetPosY
+    global WidgetGui, WidgetVisible, WidgetPosX, WidgetPosY, SplitMode
+    if SplitMode
+        return
     WidgetVisible := true
     UpdateWidgetContent()
     LayoutWidget()
@@ -670,9 +801,33 @@ LayoutWidget() {
     global WidgetTitle, WidgetMenuBtn
     global Profiles, ProfileWidgetBtns, ProfileWidgetStatus, ProfileWidgetKeys
 
-    ; Spacing depends on snap setting.
-    ; Snap ON = tight/compact, Snap OFF = breathing room between profiles.
     profileGap := WidgetSnap ? 2 : 12
+
+    ; --- MICRO ---
+    if WidgetSize = "Micro" {
+        WidgetTitle.Visible := false
+        WidgetMenuBtn.Visible := false
+
+        pad := 4
+        btnSize := 24
+        gap := WidgetSnap ? 2 : 6
+        x := pad
+
+        for i, btn in ProfileWidgetBtns {
+            ProfileWidgetStatus[i].Visible := false
+            ProfileWidgetKeys[i].Visible := false
+            btn.SetFont("s7 Bold", "Segoe UI")
+            btn.Move(x, pad, btnSize, btnSize)
+            btn.Visible := true
+            x += btnSize + gap
+        }
+
+        totalW := x - gap + pad
+        totalH := btnSize + (pad * 2)
+        WidgetGui.Move(, , totalW, totalH)
+        SetTimer(ApplyRoundedCorners, -50)
+        return
+    }
 
     ; --- EXTRA SMALL ---
     if WidgetSize = "Extra Small" {
@@ -720,7 +875,6 @@ LayoutWidget() {
     WidgetMenuBtn.Visible := true
 
     for i, btn in ProfileWidgetBtns {
-        ; Gap between profiles.
         if i > 1
             y += profileGap
 
@@ -779,7 +933,7 @@ UpdateWidgetContent() {
         ProfileWidgetStatus[i].Opt(p.IsHeld ? "c6FE38A" : "c888888")
         ProfileWidgetKeys[i].Text := FormatKeys(p.ActionKeys)
 
-        if WidgetSize = "Extra Small"
+        if (WidgetSize = "Extra Small" || WidgetSize = "Micro")
             btn.Text := p.IsHeld ? "■" : "▶"
         else
             btn.Text := p.IsHeld ? p.Name ": OFF" : p.Name ": ON"
@@ -787,11 +941,98 @@ UpdateWidgetContent() {
 }
 
 UpdateWidget() {
-    global WidgetVisible
+    global WidgetVisible, SplitMode
+    if SplitMode {
+        UpdateSplitWidgets()
+        return
+    }
     if !WidgetVisible
         return
     UpdateWidgetContent()
     LayoutWidget()
+}
+
+; ============================================================
+; SPLIT WIDGETS (each profile = own draggable window)
+; ============================================================
+
+ShowSplitWidgets() {
+    global SplitWidgets, Profiles, WidgetSize, WidgetVisible
+
+    ; Destroy old split widgets.
+    for sw in SplitWidgets
+        try sw.Gui.Destroy()
+    SplitWidgets := []
+
+    WidgetVisible := true
+
+    ; Determine button size.
+    btnSize := 40
+    pad := 6
+    switch WidgetSize {
+        case "Micro":       btnSize := 24, pad := 4
+        case "Extra Small": btnSize := 40, pad := 6
+        case "Small":       btnSize := 52, pad := 8
+        case "Medium":      btnSize := 64, pad := 10
+        case "Large":       btnSize := 80, pad := 12
+    }
+
+    ; Default spread position.
+    baseX := 1200
+    baseY := 120
+
+    for i, p in Profiles {
+        sw := {}
+
+        sw.Gui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x08000000")
+        sw.Gui.BackColor := "1E1E2E"
+        sw.Gui.MarginX := pad
+        sw.Gui.MarginY := pad
+
+        ; Button.
+        fontSize := WidgetSize = "Micro" ? "s7" : WidgetSize = "Extra Small" ? "s9" : "s10"
+        sw.Btn := sw.Gui.Add("Button", "x" pad " y" pad " w" btnSize " h" btnSize, p.IsHeld ? "■" : "▶")
+        sw.Btn.SetFont(fontSize " Bold", "Segoe UI")
+        sw.Btn.OnEvent("Click", ToggleProfileClick.Bind(i))
+
+        totalSize := btnSize + (pad * 2)
+        sw.Gui.Show("Hide")
+        sw.Hwnd := sw.Gui.Hwnd
+
+        ; Position.
+        posX := p.SplitX >= 0 ? p.SplitX : baseX + ((i - 1) * (totalSize + 10))
+        posY := p.SplitY >= 0 ? p.SplitY : baseY
+
+        sw.Gui.Show("x" posX " y" posY " w" totalSize " h" totalSize " NoActivate")
+        SetTimer(ApplyRoundToHwndTimer.Bind(sw.Hwnd), -50)
+
+        SplitWidgets.Push(sw)
+    }
+}
+
+ApplyRoundToHwndTimer(hwnd, *) {
+    ApplyRoundToHwnd(hwnd)
+}
+
+HideSplitWidgets() {
+    global SplitWidgets, WidgetVisible
+
+    SaveSplitPositions()
+    for sw in SplitWidgets
+        try sw.Gui.Destroy()
+    SplitWidgets := []
+    WidgetVisible := false
+}
+
+UpdateSplitWidgets() {
+    global SplitWidgets, Profiles, WidgetSize
+
+    for i, sw in SplitWidgets {
+        if i > Profiles.Length
+            break
+        p := Profiles[i]
+        sw.Btn.Text := p.IsHeld ? "■" : "▶"
+    }
 }
 
 ; ============================================================
@@ -882,20 +1123,20 @@ ToggleProfileHotkey(index, *) {
 ; ============================================================
 
 WidgetMenuClick(*) {
-    global Profiles, WidgetSize, WidgetSnap
+    global Profiles, WidgetSize, WidgetSnap, SplitMode
     global ShowWidgetStatus, ShowWidgetName, ShowWidgetKeys, ShowWidgetToggle
 
     local wMenu := Menu()
 
-    for i, p in Profiles {
+    for i, p in Profiles
         wMenu.Add(p.Name ": " (p.IsHeld ? "Turn OFF" : "Turn ON"), ToggleProfileHotkey.Bind(i))
-    }
 
     wMenu.Add()
     wMenu.Add("Release all", ReleaseAllClick)
     wMenu.Add()
 
     local sizeSub := Menu()
+    sizeSub.Add("Micro", SetSizeMicro)
     sizeSub.Add("Extra Small", SetSizeXS)
     sizeSub.Add("Small", SetSizeS)
     sizeSub.Add("Medium", SetSizeM)
@@ -904,9 +1145,12 @@ WidgetMenuClick(*) {
     wMenu.Add("Widget size", sizeSub)
 
     local layoutSub := Menu()
-    layoutSub.Add("Snap together (compact)", ToggleSnap)
+    layoutSub.Add("Snap together", ToggleSnapMenu)
+    layoutSub.Add("Split apart", ToggleSplitMenu)
     if WidgetSnap
-        layoutSub.Check("Snap together (compact)")
+        layoutSub.Check("Snap together")
+    if SplitMode
+        layoutSub.Check("Split apart")
     wMenu.Add("Layout", layoutSub)
 
     local contentSub := Menu()
@@ -926,13 +1170,16 @@ WidgetMenuClick(*) {
 
     wMenu.Add()
     wMenu.Add("Open settings", ShowMainGui)
-    wMenu.Add("Hide widget", HideWidget)
+    wMenu.Add("Hide widget", HideWidgetClick)
     wMenu.Add()
     wMenu.Add("Exit", ExitClick)
 
     wMenu.Show()
 }
 
+SetSizeMicro(*) {
+    SetWidgetSize("Micro")
+}
 SetSizeXS(*) {
     SetWidgetSize("Extra Small")
 }
@@ -948,20 +1195,39 @@ SetSizeL(*) {
 ExitClick(*) {
     ExitApp()
 }
-ToggleSnap(*) {
-    global WidgetSnap, SnapCheck
+ToggleSnapMenu(*) {
+    global WidgetSnap, SnapCheck, SplitMode
     WidgetSnap := !WidgetSnap
     SnapCheck.Value := WidgetSnap ? 1 : 0
     SaveConfig()
-    UpdateWidget()
+    if !SplitMode
+        UpdateWidget()
+}
+ToggleSplitMenu(*) {
+    global SplitMode, SplitCheck
+    SplitMode := !SplitMode
+    SplitCheck.Value := SplitMode ? 1 : 0
+    SaveConfig()
+    if SplitMode {
+        HideWidget()
+        ShowSplitWidgets()
+    } else {
+        HideSplitWidgets()
+        ShowWidget()
+    }
 }
 
 SetWidgetSize(size) {
-    global WidgetSize
+    global WidgetSize, SplitMode
     WidgetSize := size
     SaveConfig()
-    UpdateWidgetContent()
-    LayoutWidget()
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        UpdateWidgetContent()
+        LayoutWidget()
+    }
 }
 
 ToggleWidgetStatus(*) {
@@ -1003,8 +1269,8 @@ SetupTray() {
     Tray.Delete()
     Tray.Add("Open settings", ShowMainGui)
     Tray.Add()
-    Tray.Add("Show widget", ShowWidget)
-    Tray.Add("Hide widget", HideWidget)
+    Tray.Add("Show widget", ShowWidgetClick)
+    Tray.Add("Hide widget", HideWidgetClick)
     Tray.Add()
     Tray.Add("Release all", ReleaseAllClick)
     Tray.Add()
@@ -1065,7 +1331,7 @@ StartKeyRecorder(mode) {
     CurrentRecordedGui.SetFont("s9 Norm", "Segoe UI")
     CurrentRecordedGui.Add("Text", "xm y+8 w420 h48 Center c666666",
         mode = "Action"
-            ? "Press any keys including Enter, Escape, etc. Use the buttons below to finish."
+            ? "Press any keys including Enter, Escape, etc. Click the buttons below when done."
             : "Use modifier keys plus one main key, such as Ctrl + Alt + Space.")
 
     CurrentRecordedGui.SetFont("s12 Bold")
@@ -1088,22 +1354,15 @@ StartKeyRecorder(mode) {
 
 RecordedKeyDown(ih, VK, SC) {
     global RecordingMode, RecordedKeys, RecordedPreviewCtrl
-
     if RecordingMode = ""
         return
-
     keyName := KeyNameFromVKSC(VK, SC)
     if keyName = ""
         return
-
-    ; NO KEYS ARE BLOCKED — Enter, Escape, everything can be recorded.
-    ; The user must click the GUI buttons to finish or cancel.
-
     for existing in RecordedKeys {
         if StrLower(existing) = StrLower(keyName)
             return
     }
-
     RecordedKeys.Push(keyName)
     try RecordedPreviewCtrl.Text := FormatKeys(RecordedKeys)
 }
@@ -1136,11 +1395,16 @@ FinishKeyRecorderClick(*) {
     SaveConfig()
     CleanupRecorder()
     RefreshProfileList()
-    global ProfileListBox, SelectedProfile
+    global ProfileListBox, SelectedProfile, SplitMode
     ProfileListBox.Choose(SelectedProfile)
     ProfileSelected(ProfileListBox)
     UpdateMainUI()
-    RebuildWidget()
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        RebuildWidget()
+    }
 }
 
 CancelKeyRecorder(*) {
@@ -1306,11 +1570,16 @@ FormatAHKHotkey(hotkey) {
 ; ============================================================
 
 WidgetSizeChanged(control, *) {
-    global WidgetSize
+    global WidgetSize, SplitMode
     WidgetSize := control.Text
     SaveConfig()
-    UpdateWidgetContent()
-    LayoutWidget()
+    if SplitMode {
+        HideSplitWidgets()
+        ShowSplitWidgets()
+    } else {
+        UpdateWidgetContent()
+        LayoutWidget()
+    }
 }
 
 WidgetOptionsChanged(*) {
@@ -1329,6 +1598,10 @@ WidgetOptionsChanged(*) {
 ; ============================================================
 
 Cleanup(*) {
-    SaveWidgetPosition()
+    global SplitMode
+    if SplitMode
+        SaveSplitPositions()
+    else
+        SaveWidgetPosition()
     ReleaseAllModifiers(true)
 }

@@ -162,8 +162,11 @@ Hotkey=^!s
 
 ## Changelog
 
+### v3.3 (Current)
+- Added a micro size button, new compact option even smaller than Extra Small
+- Split buttons into separate draggable widgets option
 
-### v3.2 (Current)
+### v3.2
 - All keys now recordable (Enter, Escape, etc. no longer blocked)
 - Snap together / separate option for button layout spacing
 - Fixed tab content spacing and alignment
